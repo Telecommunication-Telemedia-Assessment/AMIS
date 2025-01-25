@@ -5,6 +5,7 @@ The **Audiovisual Multimodal Interaction Suite** features the **AMIS Dataset**, 
 
 
 The link to the corresponding paper:
+
 The link to download the dataset and metadata: [https://avtshare01.rz.tu-ilmenau.de/amis/](https://avtshare01.rz.tu-ilmenau.de/amis/)
 
 	
@@ -21,7 +22,17 @@ The link to download the dataset and metadata: [https://avtshare01.rz.tu-ilmenau
 1. Clone this repository
 2. Open the project in Unity.
 3. Build the project for your target platform (e.g., Windows, Oculus).
-4. Run the application and explore the scenes with the pre-baked demo:
+4. add the following videos from the dataset to the video folder for the demo
+```
+Talking-head videos EF2_EF1_1 and 2, EM_M1
+Full-body videos EM_EF2_1 and 2, EM_M1
+```
+5. add the following files from the dataset to the ReconstructedStreams folder for the demo
+```
+Audio, Vol. Avatar byte stream and stream info JSON file for
+EF1_EM_1 and 2, EM_M1
+```
+6. Run the application and explore the scenes:
    - Use the VR menu to switch between scenes.
 
 ### Animated Avatars scene
@@ -32,7 +43,7 @@ The link to download the dataset and metadata: [https://avtshare01.rz.tu-ilmenau
 
 ### Volumetric Avatars scene
 1. Activate/Deactivate the desired VolumetricAvatar game object.
-2. Every recording is represented by the associated byte streams and a strem infoJSON file which loads the stream and audio in the Unity scene.
+2. Every recording is represented by the associated byte streams and a stream info JSON file which loads the stream and audio in the Unity scene.
 3. Both should be added to the Resources folder with the associated audio file.
 4. Add the path to the JSON file in the volumetric_resource_json_file_path entry in the Volumetric Video Updater component of the child object of the main player.
 5. Make sure the Audio Source component is selected.

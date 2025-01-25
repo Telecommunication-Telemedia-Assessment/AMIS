@@ -1,0 +1,32 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel TSDFInitialize
+
+//struct Vert
+//{
+//	float3 position;
+//	float2 uv;
+//};
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+//RWTexture2D<float4> Result;
+
+uint _tsdf_res_per_axis;
+
+
+int3 VolDims;
+
+
+RWTexture3D<uint> tsdf_to_write;
+
+
+[numthreads(8,8,8)]
+void TSDFInitialize(uint3 global_thread_id : SV_DispatchThreadID)
+{
+	if (global_thread_id.y % 2 == 0) {
+		tsdf_to_write[global_thread_id] = -100;
+	}
+	else {
+		tsdf_to_write[global_thread_id] = 100;
+	}
+}

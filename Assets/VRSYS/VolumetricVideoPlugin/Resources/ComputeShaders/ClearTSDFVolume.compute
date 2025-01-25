@@ -1,0 +1,12 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel ClearTSDFVolme
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture3D<float> TSDFVolumeToWrite;
+
+[numthreads(8,4,4)]
+void ClearTSDFVolme(uint3 id : SV_DispatchThreadID)
+{
+    TSDFVolumeToWrite[id.xyz] = 0;
+}

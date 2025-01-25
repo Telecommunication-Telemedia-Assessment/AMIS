@@ -1,0 +1,55 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel UpdateOccupiedColorTiles
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2DArray<float4> ColorRenderTextureToWrite;
+
+Texture2D<float3> _packedColorTexture;
+SamplerState pointClampSampler;
+
+StructuredBuffer<int> OccupiedTileIndicesBuffer;
+
+int NumOccupiedTilesToUpdate;
+int TilesInCol;
+int TilesInRow;
+
+#define PACKED_TEXTURE_DIM_X (1024)
+#define PACKED_TEXTURE_DIM_Y (512)
+
+#define NUM_TILES_PER_PACKED_TEXTURE_ROW (PACKED_TEXTURE_DIM_X/8)
+#define NUM_TILES_PER_PACKED_TEXTURE_COL (PACKED_TEXTURE_DIM_Y/8)
+
+#define RENDER_TEXTURE_LAYER_DIM_X (1280)
+#define RENDER_TEXTURE_LAYER_DIM_Y (720)
+
+#define NUM_TILES_PER_RENDER_TEXTURE_ROW (160)
+#define NUM_TILES_PER_RENDER_TEXTURE_SLICE (14400)
+
+[numthreads(8,8,1)]
+void UpdateOccupiedColorTiles(uint3 local_thread_id : SV_GroupThreadID, uint3 global_thread_id : SV_DispatchThreadID, 
+                              uint3 unflattened_group_index : SV_GroupID)
+{
+    int flattened_group_index = unflattened_group_index.x + unflattened_group_index.y * TilesInCol;
+    if (flattened_group_index < NumOccupiedTilesToUpdate) {
+        uint packed_tile_idx = flattened_group_index;
+        uint source_tile_idx_one_d = OccupiedTileIndicesBuffer[packed_tile_idx];
+
+        uint3 target_location_for_tile = uint3(0, 0, 0);
+        target_location_for_tile.z = source_tile_idx_one_d / (NUM_TILES_PER_RENDER_TEXTURE_SLICE);
+        source_tile_idx_one_d -= target_location_for_tile.z * NUM_TILES_PER_RENDER_TEXTURE_SLICE;
+        target_location_for_tile.y = source_tile_idx_one_d / NUM_TILES_PER_RENDER_TEXTURE_ROW;
+        target_location_for_tile.x = source_tile_idx_one_d % NUM_TILES_PER_RENDER_TEXTURE_ROW;
+
+        uint3 tile_write_location = uint3(target_location_for_tile.x * 8, target_location_for_tile.y * 8, target_location_for_tile.z) + local_thread_id;
+        uint2 packed_texture_read_offset = 8 * uint2(packed_tile_idx % NUM_TILES_PER_PACKED_TEXTURE_ROW, packed_tile_idx / NUM_TILES_PER_PACKED_TEXTURE_ROW);
+
+        float3 sampled_color_value = float3(1.0, 0.0, 0.0);
+
+        float2 uv_coords = (packed_texture_read_offset + local_thread_id.xy + float2(0.5, 0.5)) / float2(PACKED_TEXTURE_DIM_X, PACKED_TEXTURE_DIM_Y);
+        uv_coords.y = 1.0 - uv_coords.y;
+        sampled_color_value = _packedColorTexture.SampleLevel(pointClampSampler, uv_coords, 0);// float2(0.5, 0.0), 0);
+
+        ColorRenderTextureToWrite[tile_write_location] = float4(sampled_color_value[0], sampled_color_value[1], sampled_color_value[2], 1.0);// 0xFF0000FF;
+    }
+}

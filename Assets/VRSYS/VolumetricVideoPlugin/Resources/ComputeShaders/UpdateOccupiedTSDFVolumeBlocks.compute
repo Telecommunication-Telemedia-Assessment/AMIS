@@ -1,0 +1,54 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CreateInitialTSDFVolme
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture3D<float> TSDFVolumeToWrite;
+//RWTexture2DArray<uint> ColorRenderTextureToWrite; 
+
+StructuredBuffer<int> OccupiedBrickIndicesBuffer;
+StructuredBuffer<uint> OccupiedBrickPayloadBuffer;
+
+int3 VolDims;
+
+[numthreads(8,4,4)]
+void CreateInitialTSDFVolme(uint3 local_thread_id : SV_GroupThreadID, uint3 global_thread_id : SV_DispatchThreadID, uint3 unflattened_group_index : SV_GroupID)
+{
+
+
+    uint3 vol_dims_in_bricks = uint3(VolDims) / uint3(8, 4, 4);// VolDims / 8u;//VolDims / 8u;
+    // TODO: insert actual code here!
+    
+    uint flattened_group_index
+        = unflattened_group_index.x;
+
+    int one_d_brick_idx = OccupiedBrickIndicesBuffer[flattened_group_index];
+    int3 three_d_brick_idx = int3(0, 0, 0);
+    three_d_brick_idx.z = one_d_brick_idx / (vol_dims_in_bricks.x * vol_dims_in_bricks.y);
+    one_d_brick_idx -= three_d_brick_idx.z * (vol_dims_in_bricks.x * vol_dims_in_bricks.y);
+    three_d_brick_idx.y = one_d_brick_idx / vol_dims_in_bricks.x;
+    three_d_brick_idx.x = one_d_brick_idx % vol_dims_in_bricks.x;
+    
+    //three_d_brick_idx = int3(4, 0, 0);
+
+    uint thread_flat_local_idx = local_thread_id.x + local_thread_id.y * 8 + local_thread_id.z * 8 * 4;
+    uint local_decode_idx = thread_flat_local_idx / 4;
+    uint local_byte_access_index = thread_flat_local_idx % 4;
+
+
+    uint brick_payload_offset = flattened_group_index * 8 * 4 * 4 / 4;
+    uint fetched_int = OccupiedBrickPayloadBuffer[brick_payload_offset + local_decode_idx];
+    uint decoded_int = (fetched_int >> (8 * (local_byte_access_index))) & 0xFF;
+
+    float decoded_float = decoded_int / 255.0;
+
+    int3 three_d_offset_index = three_d_brick_idx * int3(8, 4, 4);
+   // if(three_d_brick_idx.x )
+   //TSDFVolumeToWrite[three_d_offset_index + local_thread_id.xyz] = (local_thread_id.x % 2 == 0) ? 0 : 1.0;
+
+
+    TSDFVolumeToWrite[three_d_offset_index + local_thread_id.xyz] = decoded_float;// local_thread_id.x % 2 == 0 ? 150 : 110;
+        
+        //decoded_float;
+
+}

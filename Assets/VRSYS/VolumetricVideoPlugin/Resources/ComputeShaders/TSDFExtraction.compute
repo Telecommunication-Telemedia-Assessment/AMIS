@@ -1,0 +1,414 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel ExtractTSDFSurface
+
+
+uint _tsdf_res_per_axis;
+float _vertex_shift;
+
+int3 VolDims;
+
+uniform float4x4 WorldToColorCamMatrices[8];
+uniform float4 ColorCamIntrinsics[8];
+uniform float4x4 VolumeToCaptureSpaceMatrix;
+
+Buffer<int> OccupiedBrickIndicesBuffer;
+
+Buffer<int> _TriangleConnectionTable;
+Buffer<int> _CubeEdgeFlags;
+
+RWTexture3D<float> TSDFVolumeToRead;
+
+Texture3D TSDFTexture;
+
+RWByteAddressBuffer Vertices;
+RWByteAddressBuffer UVs;
+RWByteAddressBuffer Indices;
+
+RWStructuredBuffer<int> counterBuffer;
+
+// Ref see:  https://github.com/Scrawk/Marching-Cubes-On-The-GPU/blob/master/Assets/MarchingCubesGPU/Shaders/MarchingCubes.compute
+
+// edgeConnection lists the index of the endpoint vertices for each of the 12 edges of the cube
+static int2 edgeConnection[12] =
+{
+	int2(0,1), int2(1,2), int2(2,3), int2(3,0), int2(4,5), int2(5,6), int2(6,7), int2(7,4), int2(0,4), int2(1,5), int2(2,6), int2(3,7)
+};
+
+// edgeDirection lists the direction vector (vertex1-vertex0) for each edge in the cube
+static float3 edgeDirection[12] =
+{
+	float3(1.0f, 0.0f, 0.0f),float3(0.0f, 1.0f, 0.0f),float3(-1.0f, 0.0f, 0.0f),float3(0.0f, -1.0f, 0.0f),
+	float3(1.0f, 0.0f, 0.0f),float3(0.0f, 1.0f, 0.0f),float3(-1.0f, 0.0f, 0.0f),float3(0.0f, -1.0f, 0.0f),
+	float3(0.0f, 0.0f, 1.0f),float3(0.0f, 0.0f, 1.0f),float3(0.0f, 0.0f, 1.0f),float3(0.0f,  0.0f, 1.0f)
+};
+
+// vertexOffset lists the positions, relative to vertex0, of each of the 8 vertices of a cube
+static float3 vertexOffset[8] =
+{
+	float3(0, 0, 0),float3(1, 0, 0),float3(1, 1, 0),float3(0, 1, 0),
+	float3(0, 0, 1),float3(1, 0, 1),float3(1, 1, 1),float3(0, 1, 1)
+};
+
+void FillCube(int x, int y, int z, out float cube[8])
+{
+
+}
+
+// GetOffset finds the approximate point of intersection of the surface
+// between two points with the values v1 and v2
+float GetOffset(float v1, float v2)
+{
+	float delta = (v2 - v1);
+	return (delta == 0.0f) ? 0.5f : (0.0f - v1) / delta;
+}
+
+
+void WriteVertex(uint vidx, float3 position)
+{
+	uint address_position = vidx * 3 * 4;
+	Vertices.Store3(address_position, asuint(position));
+}
+
+void WriteUV(uint vidx, float2 uv)
+{
+	uint address_uv = vidx * 2 * 4;
+	UVs.Store2(address_uv, asuint(uv));
+}
+
+
+void WriteUV(uint vidx, float3 uv)
+{
+	uint address_uv = vidx * 2 * 4;
+
+	uint3 quantized_uv_coords;
+
+	quantized_uv_coords[0] = uint(clamp((uv.x * 2000000000u), 0u, 1999999999u) );
+	quantized_uv_coords[1] = uint(clamp((uv.y * 536870910u), 0u, 536870909u));
+	quantized_uv_coords[2] = uint(uv.z);
+
+	uint2 packed_uv_coords;
+	packed_uv_coords[0] = quantized_uv_coords[0];
+	packed_uv_coords[1] = ((0x1FFFFFFF & quantized_uv_coords[1]) << 3) | (0x7 & quantized_uv_coords[2]);
+
+
+	UVs.Store2(address_uv, asuint(packed_uv_coords));
+}
+
+SamplerState MeshTextureSampler
+{
+	Filter = MIN_MAG_MIP_POINT;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+
+#define NUM_RGBD_CAMS_PER_GROUP 8
+
+
+const float degeneration_limit = 100000;
+
+float calc_area_heron(float2 projected_vertex_positions[3]) {
+	float a = length(projected_vertex_positions[1] - projected_vertex_positions[2]);
+	float b = length(projected_vertex_positions[0] - projected_vertex_positions[2]);
+	float c = length(projected_vertex_positions[0] - projected_vertex_positions[1]);
+
+	/*
+	if ((a / b) > degeneration_limit || (b / a) > degeneration_limit || (a / c) > degeneration_limit
+		|| (c / a) > degeneration_limit || (b / c) > degeneration_limit || (c / b) > degeneration_limit) {
+		return -1.0f;
+	}
+	*/
+
+	float s = (a + b + c) * 0.5f;
+
+	return sqrt(s * (s - a) * (s - b) * (s - c));
+}
+
+void write_uvs_based_on_best_triangle_visibility(float4 in_volume_space_vertex_positions[3], uint tri_vertex_write_offset) {
+	//asdasd
+	int best_cam_idx = -1;
+	float best_screen_space_size = 0.0;
+	float2 projected_vertex_positions[3] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+	float2 best_projected_vertex_positions[3] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+	for (int cam_candidate_idx = 0; cam_candidate_idx < NUM_RGBD_CAMS_PER_GROUP; ++cam_candidate_idx) {
+
+		float4x4 combined_matrices = mul(WorldToColorCamMatrices[cam_candidate_idx], VolumeToCaptureSpaceMatrix);
+		float4 view_space_vertices[3];
+
+		for (float vertex_idx = 0; vertex_idx < 3; ++vertex_idx) {
+			view_space_vertices[vertex_idx] = mul(combined_matrices, in_volume_space_vertex_positions[vertex_idx]);
+		}
+
+		//float4x3 view_space_vertices = mul(combined_matrices, in_volume_space_vertex_positions);
+
+		bool is_front_facing = cross(float3(view_space_vertices[1].xyz - view_space_vertices[0].xyz), float3(view_space_vertices[2].xyz - view_space_vertices[0].xyz)).z < 0;
+
+		if (!is_front_facing) {
+			continue;
+		}
+
+		//float4x4 current_col_intrinsic = color_intrinsics_15_DOF[cam_candidate_idx];
+
+		float4 current_intrinsic_parameters = ColorCamIntrinsics[cam_candidate_idx];
+
+		bool can_use_result = true;
+		for (uint vertex_to_project_idx = 0; vertex_to_project_idx < 3; ++vertex_to_project_idx) {
+			int valid = 0;
+			//#define COMPLEX_PROJ
+
+			//projected_vertex_positions[vertex_t]
+#ifdef COMPLEX_PROJ
+			/*
+			transformation_project_meters_to_color_texture(current_col_intrinsic,
+				view_space_vertices[vertex_to_project_idx].xyz,
+				projected_vertex_positions[vertex_to_project_idx],
+				valid);
+			*/
+#else
+			/*
+			transformation_project_meters_to_color_texture_pinhole(current_col_intrinsic,
+				view_space_vertices[vertex_to_project_idx].xyz,
+				projected_vertex_positions[vertex_to_project_idx],
+				valid);
+			*/
+
+			projected_vertex_positions[vertex_to_project_idx]
+				= float2(current_intrinsic_parameters[0] * view_space_vertices[vertex_to_project_idx].x / view_space_vertices[vertex_to_project_idx].z + current_intrinsic_parameters[2],
+						 current_intrinsic_parameters[1] * view_space_vertices[vertex_to_project_idx].y / view_space_vertices[vertex_to_project_idx].z + current_intrinsic_parameters[3]);
+
+			//valid = 1;
+			//inout_point2d[0] = fx * in_point3d_m[0] / in_point3d_m[2] + cx;
+			//inout_point2d[1] = fy * in_point3d_m[1] / in_point3d_m[2] + cy;
+#endif
+			/*
+			void transformation_project_pinhole_internal(highp in mat4 intrinsics,
+		inout highp vec2 in_xy,
+		inout highp vec2 in_out_uv) {
+		*/
+
+			//if (0 == valid) {
+			//	can_use_result = false;
+			//	break;
+			//}
+		}
+
+
+
+		if (!can_use_result) {
+			continue;
+		}
+
+		float projected_triangle_area = calc_area_heron(projected_vertex_positions);
+		if (projected_triangle_area > best_screen_space_size) {
+			best_screen_space_size = projected_triangle_area;
+			best_cam_idx = cam_candidate_idx;
+
+			best_projected_vertex_positions = projected_vertex_positions;
+		}
+
+	}
+
+	//uint out_cam_idx_layer_to_associate = get_best_triangle_visibility_index(three_vertices_to_project);
+  //if(-1 != best_cam_idx) {
+	for (uint local_tri_vertex_uv_coords = 0; local_tri_vertex_uv_coords < 3; ++local_tri_vertex_uv_coords) {
+		uint global_vertex_uv_write_offset = tri_vertex_write_offset + local_tri_vertex_uv_coords;
+
+		//uint debug_layer_to_write = (global_vertex_uv_write_offset / 3) % 8;
+		   
+		float2 out_base_uvs = (best_projected_vertex_positions[local_tri_vertex_uv_coords] / float2(1280, 720));// texture_size_color_types.xy);// * 2.0 - 1.0;
+		//vec2 out_base_uvs = (best_projected_vertex_positions * 2.0
+
+		//write_vertex_uvs_32f(global_vertex_uv_write_offset, float2(out_base_uvs.x, out_base_uvs.y + best_cam_idx));
+		WriteUV(global_vertex_uv_write_offset, float2(out_base_uvs.x, out_base_uvs.y + best_cam_idx));
+	}
+	//}
+
+  //return best_cam_idx;
+}
+
+
+
+
+
+uint IsVoxelOccupied(uint3 in_pos_3d, out float cube_values[8]) {
+
+	float max_value = -999;
+	float min_value = 999;
+	cube_values[0] = TSDFVolumeToRead[in_pos_3d] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[1] = TSDFVolumeToRead[in_pos_3d + uint3(1, 0, 0)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[2] = TSDFVolumeToRead[in_pos_3d + uint3(1, 1, 0)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[3] = TSDFVolumeToRead[in_pos_3d + uint3(0, 1, 0)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+
+	cube_values[4] = TSDFVolumeToRead[in_pos_3d + uint3(0, 0, 1)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[5] = TSDFVolumeToRead[in_pos_3d + uint3(1, 0, 1)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[6] = TSDFVolumeToRead[in_pos_3d + uint3(1, 1, 1)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+	cube_values[7] = TSDFVolumeToRead[in_pos_3d + uint3(0, 1, 1)] - 0.5f;// sign(last_dist_sample - 0.5) != sign(curr_dist_sample - 0.5)
+
+	uint result_flag = 0x00;
+
+	for (uint cell_idx = 0; cell_idx < 8; ++cell_idx) {
+		result_flag |= (cube_values[cell_idx] <= 0.0) ? (1 << cell_idx) : 0;
+
+		max_value = max(max_value, cube_values[cell_idx]);
+		min_value = min(min_value, cube_values[cell_idx]);
+	}
+
+	if ( (max_value - min_value) > 0.95) {
+		result_flag = 0;
+	}
+
+	return result_flag;
+}
+
+//groupshared uint num_extracted_vertices[8 * 4 * 4];
+
+[numthreads(2,4,4)]
+//void ExtractTSDFSurface(int3 global_thread_id : SV_DispatchThreadID)
+void ExtractTSDFSurface(uint3 local_thread_id : SV_GroupThreadID, uint3 unflattened_group_index : SV_GroupID)
+{
+	uint3 vol_dims_in_bricks = uint3(VolDims) / uint3(8, 4, 4);// VolDims / 8u;//VolDims / 8u;
+
+	uint flattened_group_index = unflattened_group_index.x;
+	
+	int one_d_brick_idx = OccupiedBrickIndicesBuffer[flattened_group_index];
+	int3 three_d_brick_idx = int3(0, 0, 0);
+	three_d_brick_idx.z = one_d_brick_idx / (vol_dims_in_bricks.x * vol_dims_in_bricks.y);
+	one_d_brick_idx -= three_d_brick_idx.z * (vol_dims_in_bricks.x * vol_dims_in_bricks.y);
+	three_d_brick_idx.y = one_d_brick_idx / vol_dims_in_bricks.x;
+	three_d_brick_idx.x = one_d_brick_idx % vol_dims_in_bricks.x;
+	
+	int3 three_d_offset_index = three_d_brick_idx * int3(8, 4, 4);
+
+
+	for (int iteration_idx = 0; iteration_idx < 4; ++iteration_idx) {
+		int3 global_thread_id = three_d_offset_index + int3(local_thread_id.x * 4 + iteration_idx, local_thread_id.yz);
+
+
+
+
+		if (global_thread_id.x >= VolDims[0] - 1 || global_thread_id.y >= VolDims[1] - 1 || global_thread_id.z >= VolDims[2] - 1) {
+			continue;
+		}
+
+		float border_values[8];
+
+		uint mc_result_flag = IsVoxelOccupied(global_thread_id, border_values);
+
+		//TODO: Normalize using actual volume resolution
+		float3 normalized_position = float3(global_thread_id);
+
+		//don't forget to skip the border later
+		if (0 != mc_result_flag && 255 != mc_result_flag) {
+
+			int edge_flags = _CubeEdgeFlags[mc_result_flag];
+
+			float3 edge_vertices[12];
+			
+
+			for (int edge_idx = 0; edge_idx < 12; ++edge_idx) {
+				if (0 != (edge_flags & (1 << edge_idx))) {
+					float offset = GetOffset(border_values[edgeConnection[edge_idx].x], border_values[edgeConnection[edge_idx].y]);
+
+					edge_vertices[edge_idx] = normalized_position + (vertexOffset[edgeConnection[edge_idx].x] + offset * edgeDirection[edge_idx]);
+				}
+			}
+
+
+			int num_triangles_to_create_by_this_thread = 0;
+			for (int pot_tri_idx = 0; pot_tri_idx < 5; ++pot_tri_idx) {
+				if (_TriangleConnectionTable[mc_result_flag * 16 + 3 * pot_tri_idx] >= 0) {
+					++num_triangles_to_create_by_this_thread;
+				}
+			}
+
+			if (num_triangles_to_create_by_this_thread > 0) {
+				int target_slot = 0;
+
+				int NUM_VERTICES_TO_WRITE_PER_TRIANGLE = 3;
+
+				InterlockedAdd(counterBuffer[0], num_triangles_to_create_by_this_thread * NUM_VERTICES_TO_WRITE_PER_TRIANGLE, target_slot);
+
+				int num_triangles_written_so_far = 0;
+
+				float4x4 combined_matrices = mul(WorldToColorCamMatrices[0], VolumeToCaptureSpaceMatrix);
+				//float4x4 view_space_vertices = combined_matrices * in_volume_space_vertex_positions;
+
+				for (int pot_tri_idx = 0; pot_tri_idx < 5; ++pot_tri_idx) {
+					if (_TriangleConnectionTable[mc_result_flag * 16 + 3 * pot_tri_idx] >= 0) {
+						float4 in_volume_space_vertex_positions[3];// = float3x4(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+						float3 position;
+						float2 uv;
+						position = (edge_vertices[_TriangleConnectionTable[mc_result_flag * 16 + (3 * pot_tri_idx + 0)]] - 0.5f) / VolDims;
+						WriteVertex(target_slot + num_triangles_written_so_far * 3 + 0, position);
+
+						in_volume_space_vertex_positions[0] = float4(position, 1.0f);
+
+						float4 curr_view_space_vertex = mul(combined_matrices, float4(position, 1.0f)); // = combined_matrices * float4(position[0], position[1], position[2], 1.0f);
+
+						float4 current_intrinsic_parameters = ColorCamIntrinsics[0];
+
+						uv = float2(current_intrinsic_parameters[0] * curr_view_space_vertex.x / curr_view_space_vertex.z + current_intrinsic_parameters[2],
+							current_intrinsic_parameters[1] * curr_view_space_vertex.y / curr_view_space_vertex.z + current_intrinsic_parameters[3]);
+
+						uv /= float2(1280.0, 720.0);
+						//uv = (uv * 0.5) + 0.5;
+						//uv = float2(0.0, 0.0);
+						WriteUV(target_slot + num_triangles_written_so_far * 3 + 0, float3(uv, 0) );
+
+						position = (edge_vertices[_TriangleConnectionTable[mc_result_flag * 16 + (3 * pot_tri_idx + 2)]] - 0.5f)/ VolDims;
+						WriteVertex(target_slot + num_triangles_written_so_far * 3 + 1, position);
+
+
+
+						curr_view_space_vertex = mul(combined_matrices, float4(position, 1.0f)); // = combined_matrices * float4(position[0], position[1], position[2], 1.0f);
+
+						current_intrinsic_parameters = ColorCamIntrinsics[0];
+
+						uv = float2(current_intrinsic_parameters[0] * curr_view_space_vertex.x / curr_view_space_vertex.z + current_intrinsic_parameters[2],
+							current_intrinsic_parameters[1] * curr_view_space_vertex.y / curr_view_space_vertex.z + current_intrinsic_parameters[3]);
+						
+						uv /= float2(1280.0, 720.0);
+						//uv = (uv * 0.5) + 0.5;
+						in_volume_space_vertex_positions[1] = float4(position, 1.0f);
+						//uv = float2(1.0, 0.0);
+						WriteUV(target_slot + num_triangles_written_so_far * 3 + 1, float3(uv, 0) );
+
+
+
+
+						position = (edge_vertices[_TriangleConnectionTable[mc_result_flag * 16 + (3 * pot_tri_idx + 1)]] - 0.5)/ VolDims;
+						WriteVertex(target_slot + num_triangles_written_so_far * 3 + 2, position);
+
+
+						curr_view_space_vertex = mul(combined_matrices, float4(position, 1.0f)); // = combined_matrices * float4(position[0], position[1], position[2], 1.0f);
+
+						current_intrinsic_parameters = ColorCamIntrinsics[0];
+
+						uv = float2(current_intrinsic_parameters[0] * curr_view_space_vertex.x / curr_view_space_vertex.z + current_intrinsic_parameters[2],
+							        current_intrinsic_parameters[1] * curr_view_space_vertex.y / curr_view_space_vertex.z + current_intrinsic_parameters[3]);
+
+						uv /= float2(1280.0, 720.0);
+
+						in_volume_space_vertex_positions[2] = float4(position, 1.0f);
+
+						//uv = (uv * 0.5) + 0.5;
+						WriteUV(target_slot + num_triangles_written_so_far * 3 + 2, float3(uv, 0) );
+
+
+
+						write_uvs_based_on_best_triangle_visibility(in_volume_space_vertex_positions, target_slot + num_triangles_written_so_far * 3);
+
+
+						if (++num_triangles_written_so_far == num_triangles_to_create_by_this_thread) {
+							break;
+						}
+					}
+				}
+
+			}
+
+		}
+
+	}
+
+}

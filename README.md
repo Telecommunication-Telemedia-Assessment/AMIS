@@ -6,7 +6,8 @@ The **Audiovisual Multimodal Interaction Suite** features the **AMIS Dataset**, 
 
 The link to the corresponding paper:
 
-The link to download the dataset and metadata: [https://avtshare01.rz.tu-ilmenau.de/amis/](https://avtshare01.rz.tu-ilmenau.de/amis/)
+The link to access the dataset, metadata, and demo video of AMIS Studio:
+[https://avtshare01.rz.tu-ilmenau.de/amis/](https://avtshare01.rz.tu-ilmenau.de/amis/)
 
 	
 ## AMIS Studio
@@ -88,6 +89,7 @@ AMIS/
 |   |-- Multiparty_Grid_Generator.py
 |   |-- participants.csv
 |   |-- vrsys-unity-volumetric-video-player-v3.unitypackage
+|   |-- DEMO_AMIS_Studio.mp4
 
 ```
 ## Nomenclature

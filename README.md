@@ -4,7 +4,7 @@
 The **Audiovisual Multimodal Interaction Suite** features the **AMIS Dataset**, a comprehensive multimodal audiovisual dataset. The dataset includes synchronized recordings in the form of Talking-Head Videos, Full-Body Videos, Personalized Animated Avatars, and Volumetric Avatars, with content structured into monologues and conversations. Complementing the dataset, the **AMIS Studio** Unity demonstrator provides a platform for exploring the dataset's content in VR. Together, AMIS Dataset and AMIS Studio offer a resource for research in immersive and multimodal communication.
 
 
-The link to the corresponding paper:
+The link to the corresponding paper: [https://doi.org/10.1145/3712676.3718344](https://doi.org/10.1145/3712676.3718344)
 
 The link to access the dataset, metadata, and demo video of AMIS Studio:
 [https://avtshare01.rz.tu-ilmenau.de/amis/](https://avtshare01.rz.tu-ilmenau.de/amis/)
